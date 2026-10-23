@@ -2,8 +2,6 @@ name: Build APK (Quick — Normal only)
 
 on:
   push:
-    branches:
-      - main
     tags:
       - 'v*-pre*'
       - 'v*-beta*'
