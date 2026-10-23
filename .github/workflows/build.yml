@@ -941,7 +941,6 @@ jobs:
             --src /tmp/bannerhub-api \
             --dst apktool_out_base/assets/local-mirror \
             --base-url http://127.0.0.1:51823 \
-            --overrides-dir data/local-mirror-overrides \
             --bundled-components data/bundled-components.json
           # Drop the Container Library catalog alongside the API mirror.
           # ContainerLibraryActivity reads this asset at runtime to populate the
