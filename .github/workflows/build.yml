@@ -3,8 +3,9 @@ name: Build APK
 on:
   workflow_dispatch:
   push:
+    branches:
+      - main
     tags:
-      - 'main'
       - 'v*'
       - '!v*-pre*'
       - '!v*-beta*'
@@ -1148,12 +1149,6 @@ jobs:
 
   release:
     needs: build
-    # Only auto-publish a GitHub Release on stable tag pushes (v3.7.2, etc).
-    # Skips on workflow_dispatch entirely — pre/beta/amazon tags dispatched
-    # manually produce artifacts only, matching the pre-release policy.
-    # The push trigger above already filters out v*-pre*/v*-beta*/v*-amazon*,
-    # so any push that reaches here is a stable tag.
-    if: github.event_name == 'push'
     runs-on: ubuntu-latest
     permissions:
       contents: write
@@ -1179,8 +1174,7 @@ jobs:
       - name: Create release
         uses: softprops/action-gh-release@v2
         with:
-          tag_name: ${{ steps.tag.outputs.name }}
-          name: BannerHub Nano Offline ${{ steps.tag.outputs.name }}
-          body_path: RELEASE_NOTES.md
-          prerelease: ${{ contains(steps.tag.outputs.name, '-') }}
+          tag_name: nightly
+          name: BannerHub Nano Offline UNITE
+          prerelease: false
           files: BannerHub-Nano-Offline-*.apk
