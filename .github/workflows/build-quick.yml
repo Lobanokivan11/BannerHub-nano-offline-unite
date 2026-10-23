@@ -3,6 +3,7 @@ name: Build APK (Quick — Normal only)
 on:
   push:
     tags:
+      - 'main'
       - 'v*-pre*'
       - 'v*-beta*'
   workflow_dispatch:
