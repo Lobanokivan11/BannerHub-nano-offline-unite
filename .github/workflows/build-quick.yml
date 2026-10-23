@@ -728,137 +728,6 @@ jobs:
           print("\nBhVibration smali patches applied successfully.")
           PYEOF
 
-      - name: Apply Offline Launch smali patch
-        run: |
-          python3 << 'PYEOF'
-          import sys
-
-          def patch(path, old, new, label):
-              try:
-                  content = open(path, encoding='utf-8').read()
-              except UnicodeDecodeError:
-                  content = open(path, encoding='latin-1').read()
-              if old not in content:
-                  print(f"ERROR: anchor not found in {path} for: {label}")
-                  sys.exit(1)
-              open(path, 'w', encoding='utf-8').write(content.replace(old, new, 1))
-              print(f"OK: {label}")
-
-          # Early-return GameConfigDownloadTask.executeInternal as Unit when network is unreachable,
-          # so launches of imported PC games (and any other source) succeed offline using
-          # whatever container/components were set up the last time the game launched online.
-          # Steam already has its own offline login bypass in SteamGameByPcEmuLaunchStrategy;
-          # this covers PcGameHubMgrImport / LocalImport / GameHubSvrDownload too.
-          # Register v2 is the label int loaded at method entry and is unconditionally
-          # overwritten by the next instruction (iget-object v2 ...->d:WineActivityData),
-          # so reusing it here is safe.
-          patch(
-              'apktool_out/smali_classes8/com/xj/winemu/setup/tasks/GameConfigDownloadTask.smali',
-              '    :cond_3\n'
-              '    invoke-static {p2}, Lkotlin/ResultKt;->b(Ljava/lang/Object;)V\n'
-              '\n'
-              '    .line 66\n'
-              '    .line 67\n'
-              '    .line 68\n'
-              '    sget-object p2, Lcom/xj/winemu/setup/core/SetupLogger;->a:Lcom/xj/winemu/setup/core/SetupLogger;\n',
-              '    :cond_3\n'
-              '    invoke-static {p2}, Lkotlin/ResultKt;->b(Ljava/lang/Object;)V\n'
-              '\n'
-              '    # BannerHub: skip game-config download when offline so imported PC games launch with last-known setup\n'
-              '    invoke-static {}, Lcom/blankj/utilcode/util/NetworkUtils;->r()Z\n'
-              '    move-result v2\n'
-              '    if-nez v2, :bh_offline_continue\n'
-              '    sget-object v2, Lkotlin/Unit;->a:Lkotlin/Unit;\n'
-              '    return-object v2\n'
-              '    :bh_offline_continue\n'
-              '\n'
-              '    .line 66\n'
-              '    .line 67\n'
-              '    .line 68\n'
-              '    sget-object p2, Lcom/xj/winemu/setup/core/SetupLogger;->a:Lcom/xj/winemu/setup/core/SetupLogger;\n',
-              'GameConfigDownloadTask.executeInternal: early-return Unit when NetworkUtils.r() is false'
-          )
-
-          # SetGameRecommConfigTask reads the GameEnvConfigEntity from SetupTaskContext;
-          # since GameConfigDownloadTask is now skipped offline, the entity is null and
-          # SetGameRecommConfigTask would throw IllegalStateException("Game environment
-          # config not found in context"). We cannot patch SetGameRecommConfigTask itself
-          # because its class lives in smali_classes12, which is replaced by the prebuilt
-          # classes12.dex at build time (dex index limit workaround above) — patches to
-          # files in smali_classes12 never reach the final APK.
-          # Workaround: patch the factory that builds the task list (SetupTaskFactory.g(),
-          # in smali_classes2, which IS reassembled) to skip adding the task to the list
-          # when offline. SetupTaskManager then never sees it. Same net effect.
-          # Register v2: free local register (`.locals 3` for method g, only v0/v1 in use
-          # at this point — v0 is the ArrayList being built, v1 is the PcEmuSetupRepository).
-          patch(
-              'apktool_out/smali_classes2/com/xj/winemu/setup/factory/SetupTaskFactory.smali',
-              '    invoke-virtual {p0, p2, p3}, Lcom/xj/winemu/setup/factory/SetupTaskFactory;->h(Lcom/xj/winemu/settings/PcGameSettingOperations;Lcom/xj/winemu/setup/core/SetupTaskContext;)Lcom/xj/winemu/setup/tasks/SetGameRecommConfigTask;\n'
-              '\n'
-              '    .line 27\n'
-              '    .line 28\n'
-              '    .line 29\n'
-              '    move-result-object v2\n'
-              '\n'
-              '    .line 30\n'
-              '    invoke-interface {v0, v2}, Ljava/util/List;->add(Ljava/lang/Object;)Z\n',
-              '    # BannerHub: skip SetGameRecommConfigTask offline (its class is in smali_classes12, replaced by prebuilt dex)\n'
-              '    invoke-static {}, Lcom/blankj/utilcode/util/NetworkUtils;->r()Z\n'
-              '    move-result v2\n'
-              '    if-eqz v2, :bh_skip_recomm_task\n'
-              '\n'
-              '    invoke-virtual {p0, p2, p3}, Lcom/xj/winemu/setup/factory/SetupTaskFactory;->h(Lcom/xj/winemu/settings/PcGameSettingOperations;Lcom/xj/winemu/setup/core/SetupTaskContext;)Lcom/xj/winemu/setup/tasks/SetGameRecommConfigTask;\n'
-              '\n'
-              '    .line 27\n'
-              '    .line 28\n'
-              '    .line 29\n'
-              '    move-result-object v2\n'
-              '\n'
-              '    .line 30\n'
-              '    invoke-interface {v0, v2}, Ljava/util/List;->add(Ljava/lang/Object;)Z\n'
-              '    :bh_skip_recomm_task\n',
-              'SetupTaskFactory.g(): omit SetGameRecommConfigTask from PC-game launch task list when NetworkUtils.r() is false'
-          )
-
-          # DependencyInstallTask fails offline too — even though the task's main class
-          # is in smali_classes9 (reassembled, so we could patch it directly),
-          # consistency with the SetGameRecommConfigTask fix wins: skip at the factory
-          # level, same wrapping idiom. Tasks 2-4 in the list (ImageFsInstallTask,
-          # ContainerInstallTask, ComponentsInstallTask) already short-circuit on
-          # disk-present and need no patch; DependencyInstallTask is the last one and
-          # it's failing.
-          patch(
-              'apktool_out/smali_classes2/com/xj/winemu/setup/factory/SetupTaskFactory.smali',
-              '    invoke-virtual {p0, p1, p3}, Lcom/xj/winemu/setup/factory/SetupTaskFactory;->c(Ljava/lang/String;Lcom/xj/winemu/setup/core/SetupTaskContext;)Lcom/xj/winemu/setup/tasks/DependencyInstallTask;\n'
-              '\n'
-              '    .line 63\n'
-              '    .line 64\n'
-              '    .line 65\n'
-              '    move-result-object p0\n'
-              '\n'
-              '    .line 66\n'
-              '    invoke-interface {v0, p0}, Ljava/util/List;->add(Ljava/lang/Object;)Z\n',
-              '    # BannerHub: skip DependencyInstallTask offline so already-installed deps do not trigger a network refresh\n'
-              '    invoke-static {}, Lcom/blankj/utilcode/util/NetworkUtils;->r()Z\n'
-              '    move-result v2\n'
-              '    if-eqz v2, :bh_skip_deps_task\n'
-              '\n'
-              '    invoke-virtual {p0, p1, p3}, Lcom/xj/winemu/setup/factory/SetupTaskFactory;->c(Ljava/lang/String;Lcom/xj/winemu/setup/core/SetupTaskContext;)Lcom/xj/winemu/setup/tasks/DependencyInstallTask;\n'
-              '\n'
-              '    .line 63\n'
-              '    .line 64\n'
-              '    .line 65\n'
-              '    move-result-object p0\n'
-              '\n'
-              '    .line 66\n'
-              '    invoke-interface {v0, p0}, Ljava/util/List;->add(Ljava/lang/Object;)Z\n'
-              '    :bh_skip_deps_task\n',
-              'SetupTaskFactory.g(): omit DependencyInstallTask from PC-game launch task list when NetworkUtils.r() is false'
-          )
-
-          print("Offline Launch patch applied.")
-          PYEOF
-
       - name: Patch GameDetailActivity — finish after Beacon auto-launch
         run: |
           python3 << 'PYEOF'
@@ -912,10 +781,301 @@ jobs:
           print("GameDetailActivity auto-launch finish patch applied.")
           PYEOF
 
-      - name: Patch package name for pre/beta (isolate from stable installs)
+      - name: Patch App.onCreate — eager-start embedded NanoHttpd server
         run: |
-          sed -i "s/gamehub\.lite/com.tencent.ig/g" apktool_out/AndroidManifest.xml
-          sed -i 's/android:label="GameHub Revanced"/android:label="BannerHub PuBG"/' apktool_out/AndroidManifest.xml
+          python3 << 'PYEOF'
+          import sys
+          path = 'apktool_out/smali_classes8/com/xj/app/App.smali'
+          content = open(path, encoding='utf-8').read()
+          # Anchor: the first thing onCreate() does is super.onCreate(), then
+          # the original BannerHub bootstrap. Insert an eager call to
+          # BannerHubLocalServer.startIfNotRunning() between them so the server
+          # is up before ANY other code runs (including offline-gated paths
+          # that would otherwise prevent EggGameHttpConfig.<clinit> from firing).
+          # Reflection avoids adding a new class ref to smali_classes8.
+          old = (
+              '    invoke-super {p0}, Landroid/app/Application;->onCreate()V\n'
+              '\n'
+              '    .line 4\n'
+          )
+          new = (
+              '    invoke-super {p0}, Landroid/app/Application;->onCreate()V\n'
+              '\n'
+              '    # BannerHub Nano Offline: eager-start embedded NanoHttpd before\n'
+              '    # any network-gated code suppresses HTTP. Reflection avoids\n'
+              '    # adding a new type ref to smali_classes8.\n'
+              '    :try_start_bn_eager\n'
+              '    const-string v0, "app.revanced.extension.gamehub.server.BannerHubLocalServer"\n'
+              '    invoke-static {v0}, Ljava/lang/Class;->forName(Ljava/lang/String;)Ljava/lang/Class;\n'
+              '    move-result-object v0\n'
+              '    const-string v1, "startIfNotRunning"\n'
+              '    const/4 v2, 0x0\n'
+              '    new-array v3, v2, [Ljava/lang/Class;\n'
+              '    invoke-virtual {v0, v1, v3}, Ljava/lang/Class;->getMethod(Ljava/lang/String;[Ljava/lang/Class;)Ljava/lang/reflect/Method;\n'
+              '    move-result-object v0\n'
+              '    const/4 v1, 0x0\n'
+              '    new-array v2, v2, [Ljava/lang/Object;\n'
+              '    invoke-virtual {v0, v1, v2}, Ljava/lang/reflect/Method;->invoke(Ljava/lang/Object;[Ljava/lang/Object;)Ljava/lang/Object;\n'
+              '    :try_end_bn_eager\n'
+              '    .catch Ljava/lang/Throwable; {:try_start_bn_eager .. :try_end_bn_eager} :catch_bn_eager\n'
+              '    goto :goto_bn_after_eager\n'
+              '    :catch_bn_eager\n'
+              '    move-exception v0\n'
+              '    :goto_bn_after_eager\n'
+              '\n'
+              '    .line 4\n'
+          )
+          if old not in content:
+              print("ERROR: anchor not found in App.smali (super.onCreate + .line 4)")
+              sys.exit(1)
+          open(path, 'w', encoding='utf-8').write(content.replace(old, new, 1))
+          print("App.onCreate: eager-start of BannerHubLocalServer injected.")
+          PYEOF
+
+      - name: Patch EggGameHttpConfig — redirect base URL to embedded NanoHttpd
+        run: |
+          python3 << 'PYEOF'
+          import sys
+          path = 'apktool_out/smali_classes13/com/xj/common/http/EggGameHttpConfig.smali'
+          content = open(path, encoding='utf-8').read()
+          # Anchor: in <clinit>, after the upstream URL constant is loaded into v0,
+          # the original code calls GameHubPrefs.getEffectiveApiUrl(v0) and stores
+          # the result in EggGameHttpConfig.b. Replace that with a startIfNotRunning()
+          # call + hardcoded localhost base URL.
+          old = (
+              '    :goto_0\n'
+              '    invoke-static {v0}, Lapp/revanced/extension/gamehub/prefs/GameHubPrefs;->getEffectiveApiUrl(Ljava/lang/String;)Ljava/lang/String;\n'
+              '\n'
+              '    move-result-object v0\n'
+              '\n'
+              '    sput-object v0, Lcom/xj/common/http/EggGameHttpConfig;->b:Ljava/lang/String;\n'
+          )
+          new = (
+              '    :goto_0\n'
+              '    # BannerHub Nano Offline: lazy-start embedded server, force localhost base URL.\n'
+              '    invoke-static {}, Lapp/revanced/extension/gamehub/server/BannerHubLocalServer;->startIfNotRunning()V\n'
+              '\n'
+              '    const-string v0, "http://127.0.0.1:51823/"\n'
+              '\n'
+              '    sput-object v0, Lcom/xj/common/http/EggGameHttpConfig;->b:Ljava/lang/String;\n'
+          )
+          if old not in content:
+              print("ERROR: anchor not found in EggGameHttpConfig.smali")
+              sys.exit(1)
+          open(path, 'w', encoding='utf-8').write(content.replace(old, new, 1))
+          print("EggGameHttpConfig: base URL redirected to embedded NanoHttpd.")
+          PYEOF
+
+      - name: Neutralize OfflineCacheInterceptor (force network-available)
+        run: |
+          python3 << 'PYEOF'
+          import re, sys
+          path = 'apktool_out/smali_classes3/com/xj/common/http/interceptor/OfflineCacheInterceptor.smali'
+          content = open(path, encoding='utf-8').read()
+          # The interceptor's a() method probes ConnectivityManager. In airplane mode
+          # it returns false, which makes intercept() bypass the actual HTTP call and
+          # fall back to OkHttp's onlyIfCached path. On a fresh install that cache is
+          # empty so /card/getTopPlatform, /devices/getDevicesList,
+          # /simulator/v2/getAllComponentList all fail (no Steam/Windows tabs, no
+          # component picker). Since every URL the app hits is now 127.0.0.1, the
+          # real-network check is meaningless. Force a()->true; b() refreshes from
+          # a() within 1s so the whole gating disappears.
+          pattern = re.compile(
+              r'\.method public final a\(\)Z\n.*?\.end method\n',
+              re.DOTALL,
+          )
+          replacement = (
+              '.method public final a()Z\n'
+              '    .locals 1\n'
+              '    # BannerHub Nano Offline: always claim network-available so the\n'
+              '    # interceptor proceeds to chain.proceed(request). Every call is\n'
+              '    # 127.0.0.1 anyway; the system-level connectivity check is\n'
+              '    # actively harmful here.\n'
+              '    const/4 v0, 0x1\n'
+              '    return v0\n'
+              '.end method\n'
+          )
+          new_content, n = pattern.subn(replacement, content, count=1)
+          if n != 1:
+              print("ERROR: a()Z method anchor not found in OfflineCacheInterceptor.smali")
+              sys.exit(1)
+          open(path, 'w', encoding='utf-8').write(new_content)
+          print("OfflineCacheInterceptor.a(): patched to always return true (network-available).")
+          PYEOF
+
+      - name: Force NetworkUtils.r() always-true (global "lie about offline")
+        run: |
+          python3 << 'PYEOF'
+          import re, sys
+          # com.blankj.utilcode.util.NetworkUtils is the connectivity utility the
+          # rest of the app routes through. Its r() returns
+          # ConnectivityManager → NetworkInfo.isConnected(). In airplane mode it
+          # returns false and at least 8 call sites (WinEmuDownloadManager.a0,
+          # WinEmuFileExplorer$checkGameConfigIsDownloaded$1, EnvLayerDetailActivity,
+          # NewNewDownloadTaskUIMgrImpl, CloudGame x2, CommonAppKt, Steam strategy)
+          # use it to gate behavior. The launch-task chain in particular surfaces
+          # "Network connection failed" via R.string.comm_network_disconnect_and_check
+          # and refuses to issue the executeScript POST. Since every URL is 127.0.0.1,
+          # which is up regardless of the radio, this whole gating is wrong for
+          # nano-offline. Force r() → true globally; OfflineCacheInterceptor.a()
+          # already does the same at the OkHttp layer (step above).
+          # Trade-off: SteamGameByPcEmuLaunchStrategy's "if no network, skip Steam
+          # login" bypass also flips — Steam library games will then try to reach
+          # Steam CMs and fail. Acceptable: bundled-components.json declares
+          # steam_manifest empty (offline users never sign into Steam in this build).
+          path = 'apktool_out/smali_classes11/com/blankj/utilcode/util/NetworkUtils.smali'
+          content = open(path, encoding='utf-8').read()
+          pattern = re.compile(
+              r'\.method public static r\(\)Z\n.*?\.end method\n',
+              re.DOTALL,
+          )
+          replacement = (
+              '.method public static r()Z\n'
+              '    .locals 1\n'
+              '    # BannerHub Nano Offline: force "network available" globally so\n'
+              '    # every launch-task / download / dialog gate that consults\n'
+              '    # NetworkUtils.r() proceeds to the local 127.0.0.1 server.\n'
+              '    const/4 v0, 0x1\n'
+              '    return v0\n'
+              '.end method\n'
+          )
+          new_content, n = pattern.subn(replacement, content, count=1)
+          if n != 1:
+              print("ERROR: r()Z method anchor not found in NetworkUtils.smali")
+              sys.exit(1)
+          open(path, 'w', encoding='utf-8').write(new_content)
+          print("NetworkUtils.r(): patched to always return true (network-available).")
+          PYEOF
+
+      - name: Force Aria NetUtils.isConnected always-true (download library gate)
+        run: |
+          python3 << 'PYEOF'
+          import re, sys
+          # com.arialyy.aria is a separate third-party download library with its
+          # OWN connectivity check. Its NetUtils.isConnected(Context) is called
+          # from 6 Aria-internal sites (StartCmd, HighestPriorityCmd, ResumeAllCmd,
+          # ThreadTask, TaskSchedulers, SimpleSchedulers). In airplane mode it
+          # returns false and Aria's StartCmd.executeCmd() prints
+          # "启动任务失败，网络未连接" 8 times in 33ms and never dispatches the
+          # download — the launch task's coroutine then hangs ~111s until the
+          # outer SetupTaskManager cancels it. Force this to always return true;
+          # every URL Aria sees is 127.0.0.1 anyway.
+          path = 'apktool_out/smali_classes6/com/arialyy/aria/util/NetUtils.smali'
+          content = open(path, encoding='utf-8').read()
+          pattern = re.compile(
+              r'\.method public static isConnected\(Landroid/content/Context;\)Z\n.*?\.end method\n',
+              re.DOTALL,
+          )
+          replacement = (
+              '.method public static isConnected(Landroid/content/Context;)Z\n'
+              '    .locals 1\n'
+              '    # BannerHub Nano Offline: force "network connected" for Aria.\n'
+              '    # Aria downloads only ever go to 127.0.0.1, so the OS-level\n'
+              '    # ConnectivityManager probe Aria uses is wrong here.\n'
+              '    const/4 v0, 0x1\n'
+              '    return v0\n'
+              '.end method\n'
+          )
+          new_content, n = pattern.subn(replacement, content, count=1)
+          if n != 1:
+              print("ERROR: isConnected(Context)Z method anchor not found in Aria NetUtils.smali")
+              sys.exit(1)
+          open(path, 'w', encoding='utf-8').write(new_content)
+          print("Aria NetUtils.isConnected(): patched to always return true.")
+          PYEOF
+
+      - name: Cache bundled CDN binaries
+        uses: actions/cache@v4
+        with:
+          path: cdn-cache
+          key: cdn-${{ hashFiles('data/bundled-components.json') }}
+
+      - name: Bundle local API mirror (NanoHttpd offline)
+        run: |
+          # Pull bannerhub-api's pre-generated static catalog (components/ + simulator/)
+          git clone --depth=1 https://github.com/The412Banner/bannerhub-api.git /tmp/bannerhub-api
+          mkdir -p apktool_out/assets/local-mirror/components-cdn
+          # Seed components-cdn from the cache if present, so prepare_local_mirror
+          # skips re-downloading any binary it has already fetched in a prior run.
+          if [ -d cdn-cache ] && [ -n "$(ls -A cdn-cache 2>/dev/null)" ]; then
+            cp -al cdn-cache/. apktool_out/assets/local-mirror/components-cdn/ 2>/dev/null \
+              || cp -a cdn-cache/. apktool_out/assets/local-mirror/components-cdn/
+            echo "Seeded $(ls apktool_out/assets/local-mirror/components-cdn/ | wc -l) files from cache."
+          fi
+          python3 scripts/prepare_local_mirror.py \
+            --src /tmp/bannerhub-api \
+            --dst apktool_out/assets/local-mirror \
+            --base-url http://127.0.0.1:51823 \
+            --overrides-dir data/local-mirror-overrides \
+            --bundled-components data/bundled-components.json
+          # Drop the Container Library catalog alongside the API mirror.
+          # ContainerLibraryActivity reads this asset at runtime to populate the
+          # downloadable-compat-layers list; not served by the embedded NanoHTTPD,
+          # just unzipped from APK on demand.
+          cp data/known-containers.json apktool_out/assets/local-mirror/known-containers.json
+          # Refresh cache dir so the next run sees this APK's CDN payload.
+          mkdir -p cdn-cache
+          cp -al apktool_out/assets/local-mirror/components-cdn/. cdn-cache/ 2>/dev/null \
+            || cp -a apktool_out/assets/local-mirror/components-cdn/. cdn-cache/
+
+      - name: Install network security config (cleartext to 127.0.0.1 only)
+        run: |
+          mkdir -p apktool_out/res/xml
+          cp scripts/network_security_config.xml apktool_out/res/xml/network_security_config.xml
+          # Replace any existing attribute, then add ours to <application>
+          sed -i 's| android:networkSecurityConfig="[^"]*"||g' apktool_out/AndroidManifest.xml
+          sed -i 's|<application |<application android:networkSecurityConfig="@xml/network_security_config" |' apktool_out/AndroidManifest.xml
+          echo "AndroidManifest <application> after patch:"
+          grep -o '<application [^>]*' apktool_out/AndroidManifest.xml | head -1
+
+      - name: Patch package name and label for offline-nano
+        run: |
+          # Unique package so this app coexists with BannerHub variants on the same device.
+          sed -i "s/gamehub\.lite/banner.nano.offline/g" apktool_out/AndroidManifest.xml
+          sed -i 's/android:label="GameHub Revanced"/android:label="BannerHub Nano Offline"/' apktool_out/AndroidManifest.xml
+
+      - name: Add zst/tzst/yml to apktool doNotCompress
+        run: |
+          # Local CDN assets (.zst/.tzst already-compressed archives, .yml
+          # catalogs) must be STORED uncompressed in the APK so the NanoHttpd
+          # server can AssetManager.openFd() them and stream with a real
+          # Content-Length. Without this, AAPT2 DEFLATE's them and openFd()
+          # throws FileNotFoundException ("probably compressed").
+          python3 - <<'PYEOF'
+          path = 'apktool_out/apktool.yml'
+          with open(path) as f:
+              lines = f.readlines()
+          out = []
+          inserted = False
+          existing_after_header = set()
+          # Walk to detect existing entries under doNotCompress and skip duplicates.
+          in_block = False
+          for line in lines:
+              if line.rstrip() == 'doNotCompress:':
+                  in_block = True
+              elif in_block:
+                  s = line.rstrip()
+                  if s.startswith('- '):
+                      existing_after_header.add(s[2:].strip())
+                  else:
+                      in_block = False
+          to_add = [e for e in ('zst', 'tzst', 'yml') if e not in existing_after_header]
+          for line in lines:
+              out.append(line)
+              if not inserted and line.rstrip() == 'doNotCompress:':
+                  for ext in to_add:
+                      out.append(f'- {ext}\n')
+                  inserted = True
+          if not inserted:
+              # No existing doNotCompress block; append one at end-of-file.
+              out.append('doNotCompress:\n')
+              for ext in to_add:
+                  out.append(f'- {ext}\n')
+          with open(path, 'w') as f:
+              f.writelines(out)
+          print(f"Added to doNotCompress: {to_add}")
+          PYEOF
+          grep -A 30 '^doNotCompress:' apktool_out/apktool.yml | head -40
 
       - name: Bundle libGameScopeVK.so fallback
         run: |
@@ -934,13 +1094,20 @@ jobs:
           # Inject original classes12.dex (skipped smali reassembly due to dex index limit)
           zip rebuilt-unsigned.apk classes12.dex
 
-          # Compile and inject GOG extension dex as classes18.dex
+          # Compile and inject extension dex (incl. NanoHttpd offline server) as classes18.dex
           ANDROID_JAR=$(ls $ANDROID_SDK_ROOT/platforms/android-*/android.jar 2>/dev/null | sort -V | tail -1)
+          NANOHTTPD_JAR=extension/server/lib/nanohttpd-2.3.1.jar
           mkdir -p ext_classes
-          javac -source 8 -target 8 -cp "$ANDROID_JAR" -d ext_classes extension/*.java
+          javac -source 8 -target 8 \
+            -cp "$ANDROID_JAR:$NANOHTTPD_JAR" \
+            -d ext_classes \
+            $(find extension -name '*.java')
           BUILD_TOOLS=$(ls $ANDROID_SDK_ROOT/build-tools | sort -V | tail -1)
           mkdir -p ext_dex
-          $ANDROID_SDK_ROOT/build-tools/$BUILD_TOOLS/d8 --release --min-api 26 --output ext_dex $(find ext_classes -name "*.class")
+          $ANDROID_SDK_ROOT/build-tools/$BUILD_TOOLS/d8 \
+            --release --min-api 26 --output ext_dex \
+            "$NANOHTTPD_JAR" \
+            $(find ext_classes -name "*.class")
           cp ext_dex/classes.dex classes18.dex
           zip -j rebuilt-unsigned.apk classes18.dex
 
@@ -953,7 +1120,7 @@ jobs:
           # in the YAML expression itself.
           SAFE_REF="${GITHUB_REF_NAME//\//-}"
           echo "SAFE_REF=$SAFE_REF" >> "$GITHUB_ENV"
-          APK_NAME="BannerHub-${SAFE_REF}-Normal.apk"
+          APK_NAME="BannerHub-Nano-Offline-${SAFE_REF}-Normal.apk"
           ${ANDROID_SDK_ROOT}/build-tools/$(ls ${ANDROID_SDK_ROOT}/build-tools | tail -1)/apksigner sign \
             --key testkey.pk8 \
             --cert testkey.x509.pem \
